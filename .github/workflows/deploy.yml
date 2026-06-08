@@ -1,0 +1,113 @@
+name: Build and Deploy to Elastic Beanstalk
+
+on:
+  push:
+    branches:
+      - main          # trigger on every push to main
+  workflow_dispatch:  # allow manual runs from the Actions tab
+
+# Least-privilege permissions for the GITHUB_TOKEN
+permissions:
+  contents: read
+  id-token: write   # required for OIDC → AWS authentication
+
+env:
+  AWS_REGION:       ${{ vars.AWS_REGION }}          # e.g. us-east-1
+  EB_APP_NAME:      ${{ vars.EB_APP_NAME }}          # Elastic Beanstalk application name
+  EB_ENV_NAME:      ${{ vars.EB_ENV_NAME }}          # Elastic Beanstalk environment name
+  S3_BUCKET:        ${{ vars.S3_DEPLOY_BUCKET }}     # S3 bucket for deployment bundles
+  JAVA_VERSION:     "17"
+
+jobs:
+  build-and-deploy:
+    name: Build → Package → Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ── 1. Checkout ───────────────────────────────────────────────────────
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      # ── 2. Set up Java ────────────────────────────────────────────────────
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: corretto
+          cache: maven
+
+      # ── 3. Build fat JAR ──────────────────────────────────────────────────
+      - name: Build with Maven
+        run: mvn --batch-mode --no-transfer-progress package -DskipTests
+
+      # ── 4. Create versioned deployment bundle ─────────────────────────────
+      - name: Create source bundle (ZIP)
+        id: bundle
+        run: |
+          VERSION="v${{ github.run_number }}-${GITHUB_SHA::7}"
+          BUNDLE="eb-demo-app-${VERSION}.zip"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "bundle=${BUNDLE}"   >> "$GITHUB_OUTPUT"
+
+          # Zip: the fat JAR + runtime config files Beanstalk needs
+          zip -j "${BUNDLE}" \
+            target/eb-demo-app.jar \
+            Procfile
+          # Add .ebextensions folder (must preserve directory structure)
+          zip -r "${BUNDLE}" .ebextensions/
+
+          echo "Bundle created: ${BUNDLE}"
+          ls -lh "${BUNDLE}"
+
+      # ── 5. Authenticate to AWS via OIDC (no long-lived secrets) ──────────
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      # ── 6. Upload bundle to S3 ────────────────────────────────────────────
+      - name: Upload bundle to S3
+        run: |
+          aws s3 cp "${{ steps.bundle.outputs.bundle }}" \
+            "s3://${{ env.S3_BUCKET }}/deployments/${{ steps.bundle.outputs.bundle }}"
+          echo "Uploaded to s3://${{ env.S3_BUCKET }}/deployments/${{ steps.bundle.outputs.bundle }}"
+
+      # ── 7. Create new Elastic Beanstalk application version ───────────────
+      - name: Create EB application version
+        run: |
+          aws elasticbeanstalk create-application-version \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --version-label    "${{ steps.bundle.outputs.version }}" \
+            --description      "Deployed from GitHub Actions – run #${{ github.run_number }}" \
+            --source-bundle    S3Bucket="${{ env.S3_BUCKET }}",S3Key="deployments/${{ steps.bundle.outputs.bundle }}" \
+            --auto-create-application
+
+      # ── 8. Deploy to Elastic Beanstalk environment ────────────────────────
+      - name: Deploy to EB environment
+        run: |
+          aws elasticbeanstalk update-environment \
+            --application-name  "${{ env.EB_APP_NAME }}" \
+            --environment-name  "${{ env.EB_ENV_NAME }}" \
+            --version-label     "${{ steps.bundle.outputs.version }}"
+
+      # ── 9. Wait for deployment to complete ────────────────────────────────
+      - name: Wait for environment to become Ready
+        run: |
+          echo "Waiting for environment to reach Ready state..."
+          aws elasticbeanstalk wait environment-updated \
+            --application-name "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}"
+          echo "Environment is Ready. Deployment complete."
+
+      # ── 10. Print the environment URL ─────────────────────────────────────
+      - name: Print Elastic Beanstalk URL
+        run: |
+          URL=$(aws elasticbeanstalk describe-environments \
+            --application-name  "${{ env.EB_APP_NAME }}" \
+            --environment-names "${{ env.EB_ENV_NAME }}" \
+            --query "Environments[0].CNAME" \
+            --output text)
+          echo "Application URL: http://${URL}"
+          echo "app_url=http://${URL}" >> "$GITHUB_STEP_SUMMARY"
