@@ -55,7 +55,7 @@ jobs:
       - name: Create source bundle (ZIP)
         id: bundle
         run: |
-          VERSION="v${{ github.run_number }}-${GITHUB_SHA::7}"
+          VERSION="v${{ github.run_number }}-${{ github.run_attempt }}-${GITHUB_SHA::7}"
           BUNDLE="eb-demo-app-${VERSION}.zip"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "bundle=${BUNDLE}"   >> "$GITHUB_OUTPUT"
