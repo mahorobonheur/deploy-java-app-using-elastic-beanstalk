@@ -79,7 +79,8 @@ jobs:
       - name: Upload bundle to S3
         run: |
           aws s3 cp "${{ steps.bundle.outputs.bundle }}" \
-            "s3://${{ env.S3_BUCKET }}/deployments/${{ steps.bundle.outputs.bundle }}"
+            "s3://${{ env.S3_BUCKET }}/deployments/${{ steps.bundle.outputs.bundle }}" \
+            --acl bucket-owner-full-control
           echo "Uploaded to s3://${{ env.S3_BUCKET }}/deployments/${{ steps.bundle.outputs.bundle }}"
 
       - name: Create EB application version
