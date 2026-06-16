@@ -56,8 +56,8 @@ public class AppController {
     public Map<String, Object> s3Info() {
         List<String> objects = s3Service.listObjects();
         Map<String, Object> response = new LinkedHashMap<>();
-        response.put("bucket name:", s3Service.getBucketName());
-        response.put("objectCount number:", objects.size());
+        response.put("s3 bucket name:", s3Service.getBucketName());
+        response.put("objectCount number track:", objects.size());
         response.put("objects:", objects);
         return response;
     }
